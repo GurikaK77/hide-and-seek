@@ -328,7 +328,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
       </form>
 
       <form id="form-signup" class="hidden">
-        <div class="field"><label>სახელი</label><input type="text" id="in-signup-name" placeholder="მაგ. გურიკა" required></div>
+        <div class="field"><label>სახელი</label><input type="text" id="in-signup-name" required></div>
         <div class="field"><label>ტელეფონის ნომერი</label><input type="tel" id="in-signup-phone" placeholder="+995 5XX XX XX XX" required></div>
         <div class="field"><label>პაროლი</label><input type="password" id="in-signup-pass" placeholder="მინიმუმ 6 სიმბოლო" required></div>
         <button class="btn" type="submit" id="btn-signup"><span>რეგისტრაცია</span></button>
@@ -346,13 +346,18 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
       <div id="create-room-card" class="card hidden">
         <div class="card-title">ახალი რუმი</div>
         <form id="form-create-room">
-          <div class="field"><label>რუმის სახელი</label><input type="text" id="in-room-name" placeholder="მაგ. ვაკის პარკი 🌳" required></div>
+          <div class="field"><label>რუმის სახელი</label><input type="text" id="in-room-name" required></div>
           <div class="field"><label>თამაშის ხანგრძლივობა (წუთი)</label><input type="number" id="in-room-time" min="1" value="15" required></div>
           <div class="btn-row">
             <button type="button" class="btn ghost" id="btn-cancel-room">გაუქმება</button>
             <button type="submit" class="btn">შექმნა</button>
           </div>
         </form>
+      </div>
+
+      <div class="auth-tabs hidden" id="rooms-scope-toggle" style="margin-bottom:14px;">
+        <button type="button" data-scope="mine" class="active">ჩემი</button>
+        <button type="button" data-scope="all">ყველა (ადმინი)</button>
       </div>
 
       <div id="rooms-list"></div>
@@ -480,6 +485,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
         <div class="avatar" id="profile-avatar" style="width:64px;height:64px;font-size:22px;margin:0 auto 12px;"></div>
         <div id="profile-name" style="font-size:18px;font-weight:800;"></div>
         <div id="profile-phone" class="sub"></div>
+        <span class="badge live hidden" id="profile-admin-badge" style="margin-top:10px;">აპლიკაციის ადმინი</span>
       </div>
 
       <div class="card">
@@ -596,6 +602,10 @@ const db = firebase.database();
 const TS = firebase.database.ServerValue.TIMESTAMP;
 auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
 
+// Phone numbers (any format — with or without country code) that get whole-app admin rights.
+// Add more numbers here to grant admin to additional people.
+const APP_ADMIN_PHONES = ['579012542'];
+
 /* ======================================================================
    STATE
 ====================================================================== */
@@ -640,6 +650,19 @@ function fmtErr(e){
 }
 function normalizePhone(raw){ return String(raw||'').replace(/[^\d]/g,''); }
 function phoneEmail(digits){ return digits + '@phone.damalobana.local'; }
+function isAdminPhone(phone){
+  const norm=normalizePhone(phone);
+  if(!norm) return false;
+  return APP_ADMIN_PHONES.some(p=>norm===p || norm.endsWith(p));
+}
+function isRoomAdmin(room){
+  if(!room) return false;
+  if(currentUserData?.isAppAdmin) return true;
+  return room.adminId===currentUser?.uid;
+}
+function getAppAdminUids(){
+  return Object.keys(allUsersMap).filter(uid=>allUsersMap[uid]?.isAppAdmin);
+}
 function fmtClock(sec){
   sec=Math.max(0,Math.floor(sec));
   const m=Math.floor(sec/60), s=sec%60;
@@ -733,6 +756,10 @@ auth.onAuthStateChanged(async user=>{
       const snap=await db.ref('users/'+user.uid).get();
       currentUserData = snap.val() || {uid:user.uid,name:user.displayName||'მოთამაშე',phone:'',cheatMode:false};
       usersCache[user.uid]=currentUserData;
+      if(isAdminPhone(currentUserData.phone) && !currentUserData.isAppAdmin){
+        currentUserData.isAppAdmin=true;
+        await db.ref('users/'+user.uid+'/isAppAdmin').set(true);
+      }
     }catch(e){ currentUserData={uid:user.uid,name:user.displayName||'მოთამაშე',phone:'',cheatMode:false}; }
     el('bottom-nav').classList.remove('hidden');
     attachGlobalListeners();
@@ -905,27 +932,53 @@ el('form-create-room').addEventListener('submit', async e=>{
   }catch(err){ toast(fmtErr(err)); }
 });
 
+let roomsScope='mine';
+function initRoomsScopeToggle(){
+  const wrap=el('rooms-scope-toggle');
+  const show=!!currentUserData?.isAppAdmin;
+  wrap.classList.toggle('hidden', !show);
+  if(!show){ roomsScope='mine'; return; }
+  wrap.querySelectorAll('button').forEach(b=>{
+    b.classList.toggle('active', b.dataset.scope===roomsScope);
+    b.onclick=()=>{
+      roomsScope=b.dataset.scope;
+      wrap.querySelectorAll('button').forEach(x=>x.classList.toggle('active', x===b));
+      renderRoomsList();
+    };
+  });
+}
+
 async function renderRoomsList(){
+  initRoomsScopeToggle();
   const wrap=el('rooms-list');
   wrap.innerHTML=`<div class="empty-state"><div class="spinner-sm" style="margin:0 auto 10px;"></div></div>`;
   try{
-    const snap=await db.ref('userRooms/'+currentUser.uid).get();
-    const ids=Object.keys(snap.val()||{});
-    if(ids.length===0){
-      wrap.innerHTML=`<div class="empty-state">
+    let rooms;
+    if(roomsScope==='all' && currentUserData?.isAppAdmin){
+      const snap=await db.ref('rooms').get();
+      const all=snap.val()||{};
+      rooms=Object.keys(all).map(id=>({id,...all[id]}));
+    } else {
+      const snap=await db.ref('userRooms/'+currentUser.uid).get();
+      const ids=Object.keys(snap.val()||{});
+      rooms=await Promise.all(ids.map(id=>db.ref('rooms/'+id).get().then(s=>({id,...(s.val()||{})}))));
+    }
+    rooms=rooms.filter(r=>r.name);
+    if(rooms.length===0){
+      wrap.innerHTML = roomsScope==='all'
+        ? `<div class="empty-state"><b>რუმი არცერთია</b><p>სისტემაში ჯერ არცერთი რუმი არ შექმნილა</p></div>`
+        : `<div class="empty-state">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 11.5 12 4l8 7.5"/><path d="M6 10.2V20h12v-9.8"/></svg>
         <b>ჯერ არცერთი რუმი არ გაქვს</b><p>დააჭირე + და შექმენი პირველი რუმი</p>
       </div>`;
       return;
     }
-    const rooms=await Promise.all(ids.map(id=>db.ref('rooms/'+id).get().then(s=>({id,...(s.val()||{})}))));
     rooms.sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
     wrap.innerHTML='';
     rooms.forEach(r=>{
-      if(!r.name) return;
       const count=Object.keys(r.players||{}).length;
       const stateLabel = r.gameState==='playing' ? 'მიმდინარეობს' : r.gameState==='ended' ? 'დასრულებულია' : 'მოლოდინში';
-      const stateClass = r.gameState==='playing' ? 'live' : r.gameState==='ended' ? 'wait' : 'wait';
+      const stateClass = r.gameState==='playing' ? 'live' : 'wait';
       const div=document.createElement('div'); div.className='room-card';
       div.innerHTML=`
         <div class="row"><div class="grow"><div class="name" style="font-size:16px;">${esc(r.name)}</div><div class="sub">ადმინი: ${esc(r.adminName||'')}</div></div>
@@ -963,8 +1016,11 @@ el('btn-rd-back').onclick=()=>{ offName('roomDetail'); showScreen('rooms'); rend
 
 async function renderRoomDetail(room, roomId){
   el('rd-room-name').textContent=room.name;
-  const isAdmin=room.adminId===currentUser.uid;
-  el('rd-room-sub').textContent = isAdmin ? 'შენ ხარ ამ რუმის ადმინი' : ('ადმინი: '+(room.adminName||''));
+  const isAdmin=isRoomAdmin(room);
+  const ownRoom = room.adminId===currentUser.uid;
+  el('rd-room-sub').textContent = ownRoom ? 'შენ ხარ ამ რუმის ადმინი'
+    : isAdmin ? `მართავ როგორც აპლიკაციის ადმინი (რუმის ადმინია: ${room.adminName||''})`
+    : ('ადმინი: '+(room.adminName||''));
 
   const players=room.players||{};
   const uids=Object.keys(players);
@@ -1161,6 +1217,7 @@ function renderProfileScreen(){
   el('profile-avatar').textContent=initials(currentUserData?.name);
   el('profile-name').textContent=currentUserData?.name||'';
   el('profile-phone').textContent=currentUserData?.phone||'';
+  el('profile-admin-badge').classList.toggle('hidden', !currentUserData?.isAppAdmin);
   el('in-new-name').value='';
   el('in-cheat-mode').checked=!!currentUserData?.cheatMode;
 }
@@ -1223,7 +1280,7 @@ function attachGlobalGameListener(roomId){
 function handlePlaying(room,roomId){
   if(!countdownTimer) startCountdown();
   const myRole=room.players?.[currentUser.uid]?.role;
-  const isAdmin=room.adminId===currentUser.uid;
+  const isAdmin=isRoomAdmin(room);
 
   if(myRole==='seeker'){
     if(!listeners['pings']) listenPings(roomId);
@@ -1328,10 +1385,18 @@ function selectPing(idx,pings){
 /* ---- cheat mode (admin live feed) ---- */
 function watchAdminCheatMode(room,roomId){
   offName('adminCheat');
-  const ref=db.ref('users/'+room.adminId+'/cheatMode');
-  const handler=snap=>{ if(snap.val()) startHiderLiveFeed(roomId); else stopGeoWatch(); };
-  ref.on('value',handler);
-  listeners['adminCheat']=()=>ref.off('value',handler);
+  const targets=Array.from(new Set([room.adminId, ...getAppAdminUids()].filter(Boolean)));
+  const wanters=new Set();
+  const offs=targets.map(uid=>{
+    const ref=db.ref('users/'+uid+'/cheatMode');
+    const handler=snap=>{
+      if(snap.val()) wanters.add(uid); else wanters.delete(uid);
+      if(wanters.size>0) startHiderLiveFeed(roomId); else stopGeoWatch();
+    };
+    ref.on('value',handler);
+    return ()=>ref.off('value',handler);
+  });
+  listeners['adminCheat']=()=>offs.forEach(f=>f());
 }
 function startHiderLiveFeed(roomId){
   if(!navigator.geolocation || watchId!==null) return;
@@ -1431,7 +1496,7 @@ el('end-close-btn').onclick=()=>{
 function showGameEndedOverlay(room,roomId){
   const overlay=el('game-end-overlay');
   overlay.classList.remove('hidden');
-  const isAdmin=room.adminId===currentUser.uid;
+  const isAdmin=isRoomAdmin(room);
   const choice=el('end-admin-choice');
   if(!room.winner){
     el('end-title').textContent='თამაში დასრულდა';
@@ -1449,7 +1514,7 @@ function showGameEndedOverlay(room,roomId){
 /* ---- game screen render ---- */
 async function renderGameScreen(room,roomId){
   el('game-room-name').textContent=room.name;
-  const isAdmin=room.adminId===currentUser.uid;
+  const isAdmin=isRoomAdmin(room);
   el('btn-end-game').classList.toggle('hidden', !isAdmin);
 
   // players strip
