@@ -264,6 +264,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .ring-bg{fill:none;stroke:var(--line);stroke-width:7;}
 .ring-fg{fill:none;stroke:var(--torch);stroke-width:7;stroke-linecap:round;stroke-dasharray:326.7;stroke-dashoffset:0;transition:stroke-dashoffset 1s linear,stroke .3s;}
 .ring-fg.warn{stroke:var(--hide);}
+.ring-fg.hide-phase{stroke:var(--seek);}
 .timer-digits{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;}
 .timer-digits .num{font-family:var(--font-mono);font-weight:800;font-size:30px;letter-spacing:1px;}
 .timer-digits .lbl{font-size:10.5px;color:var(--mist);margin-top:2px;text-transform:uppercase;letter-spacing:1px;}
@@ -347,7 +348,8 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
         <div class="card-title">ახალი რუმი</div>
         <form id="form-create-room">
           <div class="field"><label>რუმის სახელი</label><input type="text" id="in-room-name" required></div>
-          <div class="field"><label>თამაშის ხანგრძლივობა (წუთი)</label><input type="number" id="in-room-time" min="1" value="15" required></div>
+          <div class="field"><label>დამალვის დრო (წუთი)</label><input type="number" id="in-room-hidetime" min="0" value="2" required></div>
+          <div class="field"><label>საძებნო დრო (წუთი)</label><input type="number" id="in-room-time" min="1" value="15" required></div>
           <div class="btn-row">
             <button type="button" class="btn ghost" id="btn-cancel-room">გაუქმება</button>
             <button type="submit" class="btn">შექმნა</button>
@@ -408,7 +410,8 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 
         <div class="card">
           <div class="card-title">პარამეტრები</div>
-          <div class="field mt-0"><label>ხანგრძლივობა (წუთი)</label><input type="number" id="in-rd-duration" min="1"></div>
+          <div class="field mt-0"><label>დამალვის დრო (წუთი)</label><input type="number" id="in-rd-hidetime" min="0"></div>
+          <div class="field mt-0"><label>საძებნო დრო (წუთი)</label><input type="number" id="in-rd-duration" min="1"></div>
           <div class="divider"></div>
           <div class="settings-row">
             <div><div class="label">ლოკაციის გამოვლენა</div><div class="desc">სიკერები პერიოდულად ხედავენ დამმალველების მდებარეობას</div></div>
@@ -438,7 +441,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
     <!-- ============ GAME ============ -->
     <section id="screen-game" class="screen hidden">
       <div class="top-row">
-        <div class="grow"><h1 class="page-title" id="game-room-name">თამაში</h1></div>
+        <div class="grow"><h1 class="page-title" id="game-room-name">თამაში</h1><span class="badge" id="game-phase-badge" style="margin-top:4px;"></span></div>
         <button class="icon-btn hidden" id="btn-end-game" aria-label="დასრულება" title="თამაშის დასრულება"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
       </div>
 
@@ -447,7 +450,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
           <circle class="ring-bg" cx="60" cy="60" r="52"></circle>
           <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"></circle>
         </svg>
-        <div class="timer-digits"><div class="num" id="timer-display">00:00</div><div class="lbl">დარჩენილი</div></div>
+        <div class="timer-digits"><div class="num" id="timer-display">00:00</div><div class="lbl" id="timer-phase-label">დარჩენილი</div></div>
       </div>
 
       <div id="game-pending-banner" class="pending-banner hidden">
@@ -496,9 +499,9 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
         </form>
       </div>
 
-      <div class="card">
+      <div class="card hidden" id="cheat-mode-card">
         <div class="settings-row" style="padding:0;">
-          <div><div class="label">🕵️ Cheat Mode</div><div class="desc">ადმინობისას ნახავ დამმალველების ლაივ ლოკაციას ნებისმიერ დროს, ინტერვალის მოლოდინის გარეშე</div></div>
+          <div><div class="label">🕵️ Cheat Mode</div><div class="desc">ნებისმიერ რუმში ნახავ დამმალველების ლაივ ლოკაციას, ინტერვალის მოლოდინის გარეშე</div></div>
           <label class="switch"><input type="checkbox" id="in-cheat-mode"><span class="track"></span></label>
         </div>
       </div>
@@ -663,6 +666,8 @@ function isRoomAdmin(room){
 function getAppAdminUids(){
   return Object.keys(allUsersMap).filter(uid=>allUsersMap[uid]?.isAppAdmin);
 }
+function isActivePhase(state){ return state==='hiding' || state==='playing'; }
+function seekStartOf(room){ return (room?.startTime||0) + (room?.hideTime||0)*1000; }
 function fmtClock(sec){
   sec=Math.max(0,Math.floor(sec));
   const m=Math.floor(sec/60), s=sec%60;
@@ -697,7 +702,7 @@ function showScreen(name){
 function goTo(tab){
   if(tab==='game'){
     if(activeRoomId && activeRoomData){
-      showScreen(activeRoomData.gameState==='playing' ? 'game':'roomdetail');
+      showScreen(isActivePhase(activeRoomData.gameState) ? 'game':'roomdetail');
     } else {
       toast('ჯერ არცერთ რუმში არ ხარ 🙂');
     }
@@ -817,7 +822,7 @@ async function resumeActiveGameIfAny(){
     const ids=Object.keys(snap.val()||{});
     for(const id of ids){
       const rs=await db.ref('rooms/'+id+'/gameState').get();
-      if(rs.val()==='playing'){ activeRoomId=id; attachGlobalGameListener(id); break; }
+      if(isActivePhase(rs.val())){ activeRoomId=id; attachGlobalGameListener(id); break; }
     }
   }catch(e){}
 }
@@ -914,11 +919,13 @@ el('form-create-room').addEventListener('submit', async e=>{
   e.preventDefault();
   const name=el('in-room-name').value.trim();
   const mins=parseInt(el('in-room-time').value)||15;
+  const hideMins=parseInt(el('in-room-hidetime').value);
+  const hideMinsSafe = isNaN(hideMins) ? 2 : Math.max(0,hideMins);
   if(!name) return toast('შეიყვანე რუმის სახელი');
   try{
     const ref=db.ref('rooms').push();
     await ref.set({
-      name, totalTime:mins*60, adminId:currentUser.uid, adminName:currentUserData.name,
+      name, totalTime:mins*60, hideTime:hideMinsSafe*60, adminId:currentUser.uid, adminName:currentUserData.name,
       gameState:'waiting', createdAt:TS,
       locationDetection:{enabled:false, interval:5},
       players:{ [currentUser.uid]: {role:'hider', joined:true, joinedAt:TS} },
@@ -926,7 +933,7 @@ el('form-create-room').addEventListener('submit', async e=>{
     });
     await db.ref('userRooms/'+currentUser.uid+'/'+ref.key).set(true);
     el('create-room-card').classList.add('hidden');
-    el('in-room-name').value=''; el('in-room-time').value=15;
+    el('in-room-name').value=''; el('in-room-time').value=15; el('in-room-hidetime').value=2;
     toast('რუმი შეიქმნა 🎉');
     openRoom(ref.key);
   }catch(err){ toast(fmtErr(err)); }
@@ -977,8 +984,8 @@ async function renderRoomsList(){
     wrap.innerHTML='';
     rooms.forEach(r=>{
       const count=Object.keys(r.players||{}).length;
-      const stateLabel = r.gameState==='playing' ? 'მიმდინარეობს' : r.gameState==='ended' ? 'დასრულებულია' : 'მოლოდინში';
-      const stateClass = r.gameState==='playing' ? 'live' : 'wait';
+      const stateLabel = r.gameState==='hiding' ? 'დამალვის დრო' : r.gameState==='playing' ? 'მიმდინარეობს' : r.gameState==='ended' ? 'დასრულებულია' : 'მოლოდინში';
+      const stateClass = isActivePhase(r.gameState) ? 'live' : 'wait';
       const div=document.createElement('div'); div.className='room-card';
       div.innerHTML=`
         <div class="row"><div class="grow"><div class="name" style="font-size:16px;">${esc(r.name)}</div><div class="sub">ადმინი: ${esc(r.adminName||'')}</div></div>
@@ -999,7 +1006,7 @@ async function openRoom(roomId){
     const room=snap.val();
     if(!room){ toast('რუმი აღარ არსებობს'); goTo('rooms'); return; }
     activeRoomData=room;
-    if(room.gameState==='playing'){
+    if(isActivePhase(room.gameState)){
       offName('roomDetail');
       attachGlobalGameListener(roomId);
       showScreen('game');
@@ -1029,6 +1036,7 @@ async function renderRoomDetail(room, roomId){
   if(isAdmin){
     el('rd-admin').classList.remove('hidden');
     el('rd-player').classList.add('hidden');
+    el('in-rd-hidetime').value=Math.round((room.hideTime||0)/60);
     el('in-rd-duration').value=Math.round((room.totalTime||900)/60);
     el('in-loc-enabled').checked=!!room.locationDetection?.enabled;
     el('in-loc-interval').value=room.locationDetection?.interval||5;
@@ -1078,6 +1086,10 @@ async function removePlayer(roomId,uid){
   }catch(e){ toast(fmtErr(e)); }
 }
 
+el('in-rd-hidetime').addEventListener('change', function(){
+  const v=parseInt(this.value); const safe=isNaN(v)?0:Math.max(0,v);
+  db.ref('rooms/'+activeRoomId+'/hideTime').set(safe*60);
+});
 el('in-rd-duration').addEventListener('change', function(){
   const v=parseInt(this.value)||1;
   db.ref('rooms/'+activeRoomId+'/totalTime').set(v*60);
@@ -1097,9 +1109,10 @@ el('btn-start-game').onclick=async ()=>{
   const total=Object.keys(players).length;
   if(total<2) return toast('მინიმუმ 2 მოთამაშეა საჭირო');
   if(seekers<1) return toast('მინიმუმ 1 მძებნელი დანიშნე');
+  const startState = (room.hideTime||0)>0 ? 'hiding' : 'playing';
   try{
-    await db.ref('rooms/'+activeRoomId).update({ gameState:'playing', startTime:TS, endReason:null, winner:null, foundRequest:null, seekerCooldowns:null, locationPings:null, liveLocations:null });
-    toast('თამაში დაიწყო!');
+    await db.ref('rooms/'+activeRoomId).update({ gameState:startState, startTime:TS, endReason:null, winner:null, foundRequest:null, seekerCooldowns:null, locationPings:null, liveLocations:null });
+    toast(startState==='hiding' ? 'დამალვის დრო დაიწყო!' : 'ძებნა დაიწყო!');
   }catch(e){ toast(fmtErr(e)); }
 };
 
@@ -1218,6 +1231,7 @@ function renderProfileScreen(){
   el('profile-name').textContent=currentUserData?.name||'';
   el('profile-phone').textContent=currentUserData?.phone||'';
   el('profile-admin-badge').classList.toggle('hidden', !currentUserData?.isAppAdmin);
+  el('cheat-mode-card').classList.toggle('hidden', !currentUserData?.isAppAdmin);
   el('in-new-name').value='';
   el('in-cheat-mode').checked=!!currentUserData?.cheatMode;
 }
@@ -1256,15 +1270,20 @@ function detachGame(){
 /* ======================================================================
    GAME — global persistent listener (works regardless of visible screen)
 ====================================================================== */
+function primeLocationPermission(){
+  if(!navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(()=>{}, ()=>{}, {enableHighAccuracy:true, timeout:8000});
+}
 function attachGlobalGameListener(roomId){
   offName('globalGame');
   activeRoomId=roomId;
+  primeLocationPermission();
   const ref=db.ref('rooms/'+roomId);
   const handler=snap=>{
     const room=snap.val();
     if(!room){ detachGame(); goTo('rooms'); return; }
     activeRoomData=room;
-    if(room.gameState==='playing'){
+    if(isActivePhase(room.gameState)){
       handlePlaying(room,roomId);
     } else if(room.gameState==='ended'){
       stopCountdown(); clearPingTimers(); stopGeoWatch();
@@ -1284,7 +1303,7 @@ function handlePlaying(room,roomId){
 
   if(myRole==='seeker'){
     if(!listeners['pings']) listenPings(roomId);
-    if(isAdmin && currentUserData?.cheatMode && !listeners['live']) listenLiveLocations(roomId);
+    if(currentUserData?.isAppAdmin && currentUserData?.cheatMode && !listeners['live']) listenLiveLocations(roomId);
   }
   if(myRole==='hider'){
     if(!listeners['adminCheat']) watchAdminCheatMode(room,roomId);
@@ -1297,20 +1316,31 @@ function startCountdown(){
   stopCountdown();
   countdownTimer=setInterval(()=>{
     const room=activeRoomData;
-    if(!room || room.gameState!=='playing'){ stopCountdown(); return; }
-    if(!room.startTime){ return; }
-    const end=room.startTime+(room.totalTime||600)*1000;
-    const remain=end-Date.now();
-    renderTimer(remain, room.totalTime||600);
-    if(remain<=0){
-      stopCountdown();
-      db.ref('rooms/'+activeRoomId+'/gameState').transaction(cur=>cur==='playing'?'ended':cur).then(res=>{
-        if(res.committed) db.ref('rooms/'+activeRoomId).update({endReason:'timeout'});
-      });
+    if(!room || !isActivePhase(room.gameState)){ stopCountdown(); return; }
+    if(!room.startTime) return;
+
+    if(room.gameState==='hiding'){
+      const hideEnd=room.startTime+(room.hideTime||0)*1000;
+      const remain=hideEnd-Date.now();
+      renderTimer(remain, room.hideTime||0, 'hiding');
+      if(remain<=0){
+        stopCountdown();
+        db.ref('rooms/'+activeRoomId+'/gameState').transaction(cur=>cur==='hiding'?'playing':cur);
+      }
+    } else {
+      const end=seekStartOf(room)+(room.totalTime||600)*1000;
+      const remain=end-Date.now();
+      renderTimer(remain, room.totalTime||600, 'playing');
+      if(remain<=0){
+        stopCountdown();
+        db.ref('rooms/'+activeRoomId+'/gameState').transaction(cur=>cur==='playing'?'ended':cur).then(res=>{
+          if(res.committed) db.ref('rooms/'+activeRoomId).update({endReason:'timeout'});
+        });
+      }
     }
   },1000);
 }
-function renderTimer(remainMs,totalSec){
+function renderTimer(remainMs,totalSec,phase){
   if(currentScreen!=='game') return;
   const remainSec=Math.max(0,remainMs/1000);
   el('timer-display').textContent=fmtClock(remainSec);
@@ -1318,7 +1348,11 @@ function renderTimer(remainMs,totalSec){
   const frac=totalSec>0 ? Math.max(0,Math.min(1,remainSec/totalSec)) : 0;
   const ring=el('ring-fg');
   ring.style.strokeDashoffset=(circumference*(1-frac)).toFixed(1);
-  ring.classList.toggle('warn', remainSec<=30);
+  ring.classList.remove('warn','hide-phase');
+  if(remainSec<=30) ring.classList.add('warn');
+  else if(phase==='hiding') ring.classList.add('hide-phase');
+  const lbl=el('timer-phase-label');
+  if(lbl) lbl.textContent = phase==='hiding' ? 'დამალვის დრო' : 'საძებნო დრო';
 }
 
 /* ---- ping scheduling (synchronized location reveal) ---- */
@@ -1326,10 +1360,10 @@ function schedulePings(room,roomId){
   clearPingTimers();
   if(!room.locationDetection?.enabled || !room.startTime) return;
   const intervalMs=(room.locationDetection.interval||5)*60000;
+  const seekStart=seekStartOf(room);
   const totalMs=(room.totalTime||600)*1000;
-  const start=room.startTime;
   const now=Date.now();
-  for(let t=start+intervalMs, idx=1; t<=start+totalMs; t+=intervalMs, idx++){
+  for(let t=seekStart+intervalMs, idx=1; t<=seekStart+totalMs; t+=intervalMs, idx++){
     const delay=t-now;
     if(delay>200){
       pingTimers.push(setTimeout(()=>captureAndSendPing(roomId,idx), delay));
@@ -1385,7 +1419,7 @@ function selectPing(idx,pings){
 /* ---- cheat mode (admin live feed) ---- */
 function watchAdminCheatMode(room,roomId){
   offName('adminCheat');
-  const targets=Array.from(new Set([room.adminId, ...getAppAdminUids()].filter(Boolean)));
+  const targets=getAppAdminUids();
   const wanters=new Set();
   const offs=targets.map(uid=>{
     const ref=db.ref('users/'+uid+'/cheatMode');
@@ -1456,6 +1490,7 @@ function renderCheatMapMarkers(positions){
 
 /* ---- found flow ---- */
 async function requestFound(roomId,targetUid,targetName){
+  if(activeRoomData?.gameState!=='playing') return toast('ჯერ ვერ დაიწყო ძებნა');
   const cd=activeRoomData?.seekerCooldowns?.[currentUser.uid];
   if(cd && cd>Date.now()) return toast('ცოტა ხანს დაელოდე ⏳');
   if(activeRoomData?.foundRequest && activeRoomData.foundRequest.status==='pending') return toast('უკვე ლოდინშია პასუხი');
@@ -1517,6 +1552,11 @@ async function renderGameScreen(room,roomId){
   const isAdmin=isRoomAdmin(room);
   el('btn-end-game').classList.toggle('hidden', !isAdmin);
 
+  const isHiding = room.gameState==='hiding';
+  const phaseBadge=el('game-phase-badge');
+  phaseBadge.textContent = isHiding ? '🙈 დამალვის დრო' : '🔍 ძებნა მიმდინარეობს';
+  phaseBadge.className = 'badge ' + (isHiding ? 'seek' : 'live');
+
   // players strip
   const players=room.players||{};
   const uids=Object.keys(players).filter(u=>players[u].joined);
@@ -1533,18 +1573,24 @@ async function renderGameScreen(room,roomId){
   const myRole=players[currentUser.uid]?.role;
   const roleStatus=el('game-role-status');
   if(myRole==='hider'){
-    roleStatus.innerHTML=`<div class="status-card hider"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 12.5A8 8 0 1 1 11.5 4a6.5 6.5 0 0 0 8.5 8.5Z"/></svg></div><b>იმალები</b><span>დარჩი ფარულად, სანამ დრო ამოიწურება</span></div>`;
-  } else if(myRole==='seeker'){
+    roleStatus.innerHTML = isHiding
+      ? `<div class="status-card hider"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 12.5A8 8 0 1 1 11.5 4a6.5 6.5 0 0 0 8.5 8.5Z"/></svg></div><b>დამალვის დროა</b><span>იპოვე კარგი ადგილი, სანამ ძებნა დაიწყება</span></div>`
+      : `<div class="status-card hider"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 12.5A8 8 0 1 1 11.5 4a6.5 6.5 0 0 0 8.5 8.5Z"/></svg></div><b>იმალები</b><span>დარჩი ფარულად, სანამ დრო ამოიწურება</span></div>`;
+  } else if(myRole==='seeker' && isHiding){
+    roleStatus.innerHTML = `<div class="status-card seeker"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div><b>დამმალველები იმალებიან</b><span>დაელოდე — ძებნა ავტომატურად დაიწყება</span></div>`;
+  } else {
     roleStatus.innerHTML='';
   }
-  el('game-seeker-panel').classList.toggle('hidden', myRole!=='seeker');
-  el('game-cheat-panel').classList.toggle('hidden', !(isAdmin && currentUserData?.cheatMode));
-  if(isAdmin && currentUserData?.cheatMode) ensureCheatMap();
 
-  // pending banner + found modal
+  const showSeekerPanel = myRole==='seeker' && !isHiding;
+  el('game-seeker-panel').classList.toggle('hidden', !showSeekerPanel);
+  el('game-cheat-panel').classList.toggle('hidden', !(currentUserData?.isAppAdmin && currentUserData?.cheatMode));
+  if(currentUserData?.isAppAdmin && currentUserData?.cheatMode) ensureCheatMap();
+
+  // pending banner + found modal (only relevant once seeking has started)
   const fr=room.foundRequest;
   const banner=el('game-pending-banner');
-  if(fr && fr.status==='pending'){
+  if(!isHiding && fr && fr.status==='pending'){
     if(fr.target===currentUser.uid){
       el('found-modal-text').textContent = `${fr.byName} ამბობს, რომ გიპოვა. ნამდვილად?`;
       el('found-modal-overlay').classList.remove('hidden');
@@ -1559,8 +1605,8 @@ async function renderGameScreen(room,roomId){
     el('found-modal-overlay').classList.add('hidden');
   }
 
-  // found list (seeker view)
-  if(myRole==='seeker'){
+  // found list (seeker view, seeking phase only)
+  if(showSeekerPanel){
     const list=el('found-list'); list.innerHTML='';
     const hiderIds=uids.filter(u=>players[u].role==='hider');
     if(hiderIds.length===0){ list.innerHTML='<div class="sub">დამმალველი არავინაა</div>'; }
