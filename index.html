@@ -159,6 +159,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .badge.hide{background:rgba(255,93,120,.14);color:var(--hide);}
 .badge.wait{background:var(--panel-3);color:var(--mist);}
 .badge.live{background:rgba(255,145,67,.16);color:var(--torch);}
+.badge.admin{background:rgba(255,145,67,.2);color:var(--torch);border:1px solid var(--torch-dim);}
 .badge svg{width:11px;height:11px;}
 
 .chip{padding:5px 9px;border-radius:8px;background:var(--panel-3);color:var(--mist);font-size:11px;font-weight:700;}
@@ -174,6 +175,23 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 
 .x-btn{width:28px;height:28px;border-radius:8px;background:var(--panel-3);border:1px solid var(--line);color:var(--mist);display:flex;align-items:center;justify-content:center;flex:none;cursor:pointer;}
 .x-btn svg{width:13px;height:13px;}
+
+/* Custom map labels */
+.map-label {
+  background: rgba(11, 15, 23, 0.85);
+  border: 1px solid var(--torch);
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  white-space: nowrap;
+}
+.map-label.live {
+  border-color: var(--hide);
+  color: var(--hide);
+}
 
 /* ============================= AUTH ============================= */
 #screen-auth{display:flex;flex-direction:column;justify-content:center;min-height:calc(100dvh - 44px);}
@@ -272,7 +290,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 .map-wrap{position:relative;border-radius:var(--radius-m);overflow:hidden;border:1px solid var(--line);margin-bottom:12px;}
 .map-wrap.active-reveal{box-shadow:0 0 0 3px var(--seek-glow);animation:pulse-ring 1.8s ease-in-out infinite;}
 @keyframes pulse-ring{0%,100%{box-shadow:0 0 0 3px var(--seek-glow);}50%{box-shadow:0 0 0 6px transparent;}}
-#map{height:230px;width:100%;background:var(--panel-2);}
+#map, #map-cheat{height:260px;width:100%;background:var(--panel-2);}
 .ping-scroll{display:flex;gap:8px;overflow-x:auto;padding:10px 2px;margin-bottom:6px;-webkit-overflow-scrolling:touch;}
 .ping-chip{flex:none;padding:8px 13px;border-radius:12px;background:var(--panel-2);border:1px solid var(--line);font-size:12px;font-weight:700;color:var(--mist);cursor:pointer;font-family:var(--font-mono);}
 .ping-chip.active{background:var(--torch);border-color:var(--torch);color:#1a0e04;}
@@ -371,7 +389,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 
       <div class="search-wrap">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
-        <input type="text" id="in-friend-search" placeholder="სახელით ან ნომრით მოძებნე">
+        <input type="text" id="in-friend-search" placeholder="სახელით მოძებნე">
       </div>
 
       <div id="friends-mine-wrap">
@@ -464,7 +482,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
         <div class="card-title">დამმალველები</div>
         <div id="found-list"></div>
 
-        <div class="card-title" style="margin-top:16px;">ლოკაცია</div>
+        <div class="card-title" style="margin-top:16px;">ლოკაცია (სატელიტი)</div>
         <div id="ping-scroll-wrap" class="hidden">
           <div class="ping-scroll" id="ping-scroll"></div>
         </div>
@@ -473,7 +491,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
       </div>
 
       <div id="game-cheat-panel" class="hidden">
-        <div class="card-title">Cheat Mode — ლაივ ლოკაცია</div>
+        <div class="card-title">🕵️ Cheat Mode — ლაივ ლოკაცია</div>
         <div class="map-wrap"><div id="map-cheat"></div></div>
       </div>
 
@@ -488,7 +506,7 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
         <div class="avatar" id="profile-avatar" style="width:64px;height:64px;font-size:22px;margin:0 auto 12px;"></div>
         <div id="profile-name" style="font-size:18px;font-weight:800;"></div>
         <div id="profile-phone" class="sub"></div>
-        <span class="badge live hidden" id="profile-admin-badge" style="margin-top:10px;">აპლიკაციის ადმინი</span>
+        <span class="badge live hidden" id="profile-admin-badge" style="margin-top:10px;">👑 აპლიკაციის ადმინი</span>
       </div>
 
       <div class="card">
@@ -605,8 +623,6 @@ const db = firebase.database();
 const TS = firebase.database.ServerValue.TIMESTAMP;
 auth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(()=>{});
 
-// Phone numbers (any format — with or without country code) that get whole-app admin rights.
-// Add more numbers here to grant admin to additional people.
 const APP_ADMIN_PHONES = ['579012542'];
 
 /* ======================================================================
@@ -621,7 +637,7 @@ let usersCache = {};
 let allUsersMap = {};
 let myFriends = {};
 let myInvitesCount = 0;
-const listeners = {};        // name -> off() fn
+const listeners = {};
 let watchId = null;
 let lastLocWrite = 0;
 let pingTimers = [];
@@ -787,7 +803,7 @@ function getUserOnce(uid){
 }
 
 /* ======================================================================
-   GLOBAL LISTENERS (invites badge, users directory, friends, my rooms)
+   GLOBAL LISTENERS
 ====================================================================== */
 function attachGlobalListeners(){
   offName('allUsers'); offName('myFriends'); offName('userInvites'); offName('userRooms');
@@ -828,7 +844,7 @@ async function resumeActiveGameIfAny(){
 }
 
 /* ======================================================================
-   FRIENDS
+   FRIENDS — PHONE RESTRICTION & SEARCH
 ====================================================================== */
 function renderFriendsScreen(){
   renderFriendsList();
@@ -842,7 +858,7 @@ function renderFriendsList(){
   const filtered=ids.filter(uid=>{
     const u=allUsersMap[uid]; if(!u) return false;
     if(!q) return true;
-    return (u.name||'').toLowerCase().includes(q) || (u.phone||'').includes(q);
+    return (u.name||'').toLowerCase().includes(q);
   });
   if(filtered.length===0){
     wrap.innerHTML = ids.length===0
@@ -852,10 +868,14 @@ function renderFriendsList(){
   }
   filtered.forEach(uid=>{
     const u=allUsersMap[uid];
+    const showPhone = currentUserData?.isAppAdmin && u.phone;
     const row=document.createElement('div'); row.className='card row';
     row.innerHTML = `
       <div class="avatar">${esc(initials(u.name))}</div>
-      <div class="grow"><div class="name">${esc(u.name)}</div><div class="sub">${esc(u.phone||'')}</div></div>
+      <div class="grow">
+        <div class="name">${esc(u.name)} ${u.isAppAdmin ? '<span class="badge admin">👑 ადმინი</span>' : ''}</div>
+        ${showPhone ? `<div class="sub">${esc(u.phone)}</div>` : ''}
+      </div>
       <button class="x-btn" title="წაშლა"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     `;
     row.querySelector('.x-btn').onclick=(e)=>{ e.stopPropagation(); removeFriend(uid); };
@@ -869,7 +889,7 @@ function renderSuggestions(){
   const filtered = ids.filter(uid=>{
     const u=allUsersMap[uid];
     if(!q) return true;
-    return (u.name||'').toLowerCase().includes(q) || (u.phone||'').includes(q);
+    return (u.name||'').toLowerCase().includes(q);
   }).slice(0,25);
   wrap.innerHTML='';
   if(filtered.length===0){
@@ -878,10 +898,14 @@ function renderSuggestions(){
   }
   filtered.forEach(uid=>{
     const u=allUsersMap[uid];
+    const showPhone = currentUserData?.isAppAdmin && u.phone;
     const row=document.createElement('div'); row.className='card row';
     row.innerHTML=`
       <div class="avatar">${esc(initials(u.name))}</div>
-      <div class="grow"><div class="name">${esc(u.name)}</div><div class="sub">${esc(u.phone||'')}</div></div>
+      <div class="grow">
+        <div class="name">${esc(u.name)} ${u.isAppAdmin ? '<span class="badge admin">👑 ადმინი</span>' : ''}</div>
+        ${showPhone ? `<div class="sub">${esc(u.phone)}</div>` : ''}
+      </div>
       <button class="btn small">დამატება</button>
     `;
     row.querySelector('button').onclick=(e)=>{ e.stopPropagation(); addFriend(uid); };
@@ -988,7 +1012,7 @@ async function renderRoomsList(){
       const stateClass = isActivePhase(r.gameState) ? 'live' : 'wait';
       const div=document.createElement('div'); div.className='room-card';
       div.innerHTML=`
-        <div class="row"><div class="grow"><div class="name" style="font-size:16px;">${esc(r.name)}</div><div class="sub">ადმინი: ${esc(r.adminName||'')}</div></div>
+        <div class="row"><div class="grow"><div class="name" style="font-size:16px;">${esc(r.name)}</div><div class="sub">ადმინი: 👑 ${esc(r.adminName||'')}</div></div>
         <span class="badge ${stateClass}">${stateLabel}</span></div>
         <div class="row"><span class="chip">${count} მოთამაშე</span><span class="chip">${Math.round((r.totalTime||0)/60)} წთ</span></div>
       `;
@@ -1025,9 +1049,9 @@ async function renderRoomDetail(room, roomId){
   el('rd-room-name').textContent=room.name;
   const isAdmin=isRoomAdmin(room);
   const ownRoom = room.adminId===currentUser.uid;
-  el('rd-room-sub').textContent = ownRoom ? 'შენ ხარ ამ რუმის ადმინი'
-    : isAdmin ? `მართავ როგორც აპლიკაციის ადმინი (რუმის ადმინია: ${room.adminName||''})`
-    : ('ადმინი: '+(room.adminName||''));
+  el('rd-room-sub').textContent = ownRoom ? '👑 შენ ხარ ამ რუმის ადმინი'
+    : isAdmin ? `მართავ როგორც აპლიკაციის ადმინი (ადმინი: ${room.adminName||''})`
+    : ('ადმინი: 👑 '+(room.adminName||''));
 
   const players=room.players||{};
   const uids=Object.keys(players);
@@ -1047,10 +1071,13 @@ async function renderRoomDetail(room, roomId){
     uids.forEach((uid,i)=>{
       const u=profiles[i]||{name:'?'};
       const p=players[uid];
+      const isRoomAdm = uid === room.adminId;
       const row=document.createElement('div'); row.className='row';
       row.innerHTML=`
         <div class="avatar">${esc(initials(u.name))}</div>
-        <div class="grow"><div class="name">${esc(u.name)}${uid===currentUser.uid?' (შენ)':''}</div></div>
+        <div class="grow">
+          <div class="name">${esc(u.name)} ${uid===currentUser.uid?'(შენ)':''} ${isRoomAdm ? '<span class="badge admin">👑 ადმინი</span>' : ''}</div>
+        </div>
         <div class="role-toggle">
           <button class="pill ${p.role==='seeker'?'on seek':''}" data-role="seeker" data-uid="${uid}">🔍 მძებნელი</button>
           <button class="pill ${p.role==='hider'?'on hide':''}" data-role="hider" data-uid="${uid}">🙈 მალვა</button>
@@ -1069,8 +1096,14 @@ async function renderRoomDetail(room, roomId){
     const list=el('rd-players-list-2'); list.innerHTML='';
     uids.forEach((uid,i)=>{
       const u=profiles[i]||{name:'?'};
+      const isRoomAdm = uid === room.adminId;
       const row=document.createElement('div'); row.className='row';
-      row.innerHTML=`<div class="avatar">${esc(initials(u.name))}</div><div class="grow"><div class="name">${esc(u.name)}${uid===currentUser.uid?' (შენ)':''}</div></div>`;
+      row.innerHTML=`
+        <div class="avatar">${esc(initials(u.name))}</div>
+        <div class="grow">
+          <div class="name">${esc(u.name)} ${uid===currentUser.uid?'(შენ)':''} ${isRoomAdm ? '<span class="badge admin">👑 ადმინი</span>' : ''}</div>
+        </div>
+      `;
       list.appendChild(row);
     });
   }
@@ -1254,7 +1287,7 @@ el('in-cheat-mode').addEventListener('change', function(){
 });
 
 /* ======================================================================
-   GAME — timers / cleanup helpers
+   GAME — TIMERS / CLEANUP
 ====================================================================== */
 function stopGeoWatch(){ if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; } }
 function clearPingTimers(){ pingTimers.forEach(t=>clearTimeout(t)); pingTimers=[]; }
@@ -1268,7 +1301,7 @@ function detachGame(){
 }
 
 /* ======================================================================
-   GAME — global persistent listener (works regardless of visible screen)
+   GAME LISTENERS
 ====================================================================== */
 function primeLocationPermission(){
   if(!navigator.geolocation) return;
@@ -1299,7 +1332,6 @@ function attachGlobalGameListener(roomId){
 function handlePlaying(room,roomId){
   if(!countdownTimer) startCountdown();
   const myRole=room.players?.[currentUser.uid]?.role;
-  const isAdmin=isRoomAdmin(room);
 
   if(myRole==='seeker'){
     if(!listeners['pings']) listenPings(roomId);
@@ -1311,7 +1343,7 @@ function handlePlaying(room,roomId){
   }
 }
 
-/* ---- countdown ring ---- */
+/* ---- Countdown ring ---- */
 function startCountdown(){
   stopCountdown();
   countdownTimer=setInterval(()=>{
@@ -1355,7 +1387,7 @@ function renderTimer(remainMs,totalSec,phase){
   if(lbl) lbl.textContent = phase==='hiding' ? 'დამალვის დრო' : 'საძებნო დრო';
 }
 
-/* ---- ping scheduling (synchronized location reveal) ---- */
+/* ---- Ping scheduling & Notifications ---- */
 function schedulePings(room,roomId){
   clearPingTimers();
   if(!room.locationDetection?.enabled || !room.startTime) return;
@@ -1377,8 +1409,12 @@ function captureAndSendPing(roomId,idx){
       time:TS,
       [`positions/${currentUser.uid}`]:{ lat:pos.coords.latitude, lng:pos.coords.longitude, name:currentUserData?.name||'' }
     });
-  }, ()=>{}, {enableHighAccuracy:true, timeout:8000});
+    toast('📍 შენი ლოკაცია გაიგზავნა!');
+  }, (err)=>{
+    console.error("Geolocation error:", err);
+  }, {enableHighAccuracy:true, timeout:10000});
 }
+
 function listenPings(roomId){
   offName('pings');
   const ref=db.ref('rooms/'+roomId+'/locationPings');
@@ -1393,6 +1429,7 @@ function listenPings(roomId){
   ref.on('value',handler);
   listeners['pings']=()=>ref.off('value',handler);
 }
+
 function renderPingChips(pings){
   if(currentScreen!=='game') return;
   const wrap=el('ping-scroll'); const outer=el('ping-scroll-wrap');
@@ -1402,21 +1439,22 @@ function renderPingChips(pings){
   wrap.innerHTML='';
   idxs.forEach(idx=>{
     const chip=document.createElement('button'); chip.className='ping-chip';
-    chip.textContent='#'+idx;
+    chip.textContent='ლოკაცია #'+idx;
     chip.onclick=()=>{ followingLatestPing=(idx===idxs[idxs.length-1]); selectPing(idx,pings); };
     wrap.appendChild(chip);
   });
 }
+
 function selectPing(idx,pings){
+  const idxs=Object.keys(pings).map(Number).sort((a,b)=>a-b);
   document.querySelectorAll('.ping-chip').forEach((c,i)=>{
-    const idxs=Object.keys(pings).map(Number).sort((a,b)=>a-b);
     c.classList.toggle('active', idxs[i]===idx);
   });
   const positions=(pings[idx]||{}).positions||{};
   renderMapMarkers(positions);
 }
 
-/* ---- cheat mode (admin live feed) ---- */
+/* ---- Cheat mode (Live location tracking) ---- */
 function watchAdminCheatMode(room,roomId){
   offName('adminCheat');
   const targets=getAppAdminUids();
@@ -1432,18 +1470,20 @@ function watchAdminCheatMode(room,roomId){
   });
   listeners['adminCheat']=()=>offs.forEach(f=>f());
 }
+
 function startHiderLiveFeed(roomId){
   if(!navigator.geolocation || watchId!==null) return;
   lastLocWrite=0;
   watchId=navigator.geolocation.watchPosition(pos=>{
     const now=Date.now();
-    if(now-lastLocWrite<6000) return;
+    if(now-lastLocWrite<3000) return; // 3 წამიანი თროთლი
     lastLocWrite=now;
     db.ref(`rooms/${roomId}/liveLocations/${currentUser.uid}`).set({
       lat:pos.coords.latitude, lng:pos.coords.longitude, name:currentUserData?.name||'', updatedAt:TS
     });
-  }, ()=>{}, {enableHighAccuracy:true, maximumAge:5000});
+  }, (err)=>console.error(err), {enableHighAccuracy:true, maximumAge:0, timeout:10000});
 }
+
 function listenLiveLocations(roomId){
   offName('live');
   const ref=db.ref('rooms/'+roomId+'/liveLocations');
@@ -1452,43 +1492,89 @@ function listenLiveLocations(roomId){
   listeners['live']=()=>ref.off('value',handler);
 }
 
-/* ---- maps ---- */
+/* ======================================================================
+   SATELLITE MAPS & MARKERS
+====================================================================== */
+const SATELLITE_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const SATELLITE_ATTR = 'Tiles &copy; Esri';
+
 function ensureMap(){
   if(mapInstance) return;
-  mapInstance=L.map('map',{zoomControl:false}).setView([41.7151,44.8271],13);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap'}).addTo(mapInstance);
+  mapInstance=L.map('map',{zoomControl:false}).setView([41.7151,44.8271],16);
+  L.tileLayer(SATELLITE_TILE_URL, { maxZoom: 19, attribution: SATELLITE_ATTR }).addTo(mapInstance);
   L.control.zoom({position:'bottomright'}).addTo(mapInstance);
   setTimeout(()=>mapInstance && mapInstance.invalidateSize(),150);
 }
+
 function ensureCheatMap(){
   if(mapCheatInstance) return;
-  mapCheatInstance=L.map('map-cheat',{zoomControl:false}).setView([41.7151,44.8271],13);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{attribution:'&copy; OpenStreetMap'}).addTo(mapCheatInstance);
+  mapCheatInstance=L.map('map-cheat',{zoomControl:false}).setView([41.7151,44.8271],16);
+  L.tileLayer(SATELLITE_TILE_URL, { maxZoom: 19, attribution: SATELLITE_ATTR }).addTo(mapCheatInstance);
   L.control.zoom({position:'bottomright'}).addTo(mapCheatInstance);
   setTimeout(()=>mapCheatInstance && mapCheatInstance.invalidateSize(),150);
 }
+
 function renderMapMarkers(positions){
   ensureMap();
   const seen=new Set();
+  const bounds = [];
   Object.entries(positions).forEach(([uid,loc])=>{
     seen.add(uid);
-    if(mapMarkers[uid]) mapMarkers[uid].setLatLng([loc.lat,loc.lng]);
-    else mapMarkers[uid]=L.marker([loc.lat,loc.lng]).addTo(mapInstance).bindPopup(esc(loc.name||''));
+    const latlng = [loc.lat, loc.lng];
+    bounds.push(latlng);
+
+    if(mapMarkers[uid]) {
+      mapMarkers[uid].setLatLng(latlng);
+    } else {
+      mapMarkers[uid]=L.marker(latlng).addTo(mapInstance);
+    }
+    mapMarkers[uid].bindTooltip(`📍 ${esc(loc.name||'')} (აქ იყო)`, { permanent: true, direction: 'top', className: 'map-label' }).openTooltip();
   });
-  Object.keys(mapMarkers).forEach(uid=>{ if(!seen.has(uid)){ mapInstance.removeLayer(mapMarkers[uid]); delete mapMarkers[uid]; } });
+
+  Object.keys(mapMarkers).forEach(uid=>{
+    if(!seen.has(uid)){ mapInstance.removeLayer(mapMarkers[uid]); delete mapMarkers[uid]; }
+  });
+
+  if(bounds.length > 0){
+    if(bounds.length === 1){
+      mapInstance.setView(bounds[0], 18);
+    } else {
+      mapInstance.fitBounds(bounds, { padding: [30, 30], maxZoom: 18 });
+    }
+  }
 }
+
 function renderCheatMapMarkers(positions){
   ensureCheatMap();
   const seen=new Set();
+  const bounds = [];
   Object.entries(positions).forEach(([uid,loc])=>{
     seen.add(uid);
-    if(mapCheatMarkers[uid]) mapCheatMarkers[uid].setLatLng([loc.lat,loc.lng]);
-    else mapCheatMarkers[uid]=L.marker([loc.lat,loc.lng]).addTo(mapCheatInstance).bindPopup(esc(loc.name||''));
+    const latlng = [loc.lat, loc.lng];
+    bounds.push(latlng);
+
+    if(mapCheatMarkers[uid]) {
+      mapCheatMarkers[uid].setLatLng(latlng);
+    } else {
+      mapCheatMarkers[uid]=L.marker(latlng).addTo(mapCheatInstance);
+    }
+    mapCheatMarkers[uid].bindTooltip(`🔴 ${esc(loc.name||'')} (LIVE)`, { permanent: true, direction: 'top', className: 'map-label live' }).openTooltip();
   });
-  Object.keys(mapCheatMarkers).forEach(uid=>{ if(!seen.has(uid)){ mapCheatInstance.removeLayer(mapCheatMarkers[uid]); delete mapCheatMarkers[uid]; } });
+
+  Object.keys(mapCheatMarkers).forEach(uid=>{
+    if(!seen.has(uid)){ mapCheatInstance.removeLayer(mapCheatMarkers[uid]); delete mapCheatMarkers[uid]; }
+  });
+
+  if(bounds.length > 0){
+    if(bounds.length === 1){
+      mapCheatInstance.setView(bounds[0], 18);
+    } else {
+      mapCheatInstance.fitBounds(bounds, { padding: [30, 30], maxZoom: 18 });
+    }
+  }
 }
 
-/* ---- found flow ---- */
+/* ---- Found flow ---- */
 async function requestFound(roomId,targetUid,targetName){
   if(activeRoomData?.gameState!=='playing') return toast('ჯერ ვერ დაიწყო ძებნა');
   const cd=activeRoomData?.seekerCooldowns?.[currentUser.uid];
@@ -1513,7 +1599,7 @@ async function respondFound(accept){
 el('found-yes').onclick=()=>respondFound(true);
 el('found-no').onclick=()=>respondFound(false);
 
-/* ---- manual end + choose winner ---- */
+/* ---- Manual end + choose winner ---- */
 el('btn-end-game').onclick=()=>{
   showConfirm('თამაშის დასრულება','ნამდვილად გინდა თამაშის ახლავე დასრულება?', async ()=>{
     try{ await db.ref('rooms/'+activeRoomId).update({gameState:'ended', endReason:'manual'}); }catch(e){ toast(fmtErr(e)); }
@@ -1539,14 +1625,14 @@ function showGameEndedOverlay(room,roomId){
     choice.classList.toggle('hidden', !isAdmin);
   } else {
     choice.classList.add('hidden');
-    if(room.winner==='seekers'){ el('end-title').textContent='🔍 სიკერები გაიმარჯვეს!'; }
-    else { el('end-title').textContent='🙈 დამმალველები გაიმარჯვეს!'; }
+    if(room.winner==='seekers'){ el('end-title').textContent='🔍 სიკერებმა გაიმარჯვეს!'; }
+    else { el('end-title').textContent='🙈 დამმალველებმა გაიმარჯვეს!'; }
     const reason = room.endReason==='found' ? (room.foundRequest?.targetName ? `იპოვეს — ${esc(room.foundRequest.targetName)}` : 'იპოვეს!') : room.endReason==='timeout' ? 'დრო ამოიწურა' : 'ადმინმა დაასრულა თამაში';
     el('end-sub').textContent=reason;
   }
 }
 
-/* ---- game screen render ---- */
+/* ---- Game screen render ---- */
 async function renderGameScreen(room,roomId){
   el('game-room-name').textContent=room.name;
   const isAdmin=isRoomAdmin(room);
@@ -1565,17 +1651,20 @@ async function renderGameScreen(room,roomId){
   uids.forEach((uid,i)=>{
     const p=players[uid], u=profiles[i]||{name:'?'};
     const b=document.createElement('span');
+    const isAdm = uid === room.adminId;
     b.className='badge '+(p.role==='seeker'?'seek':'hide');
-    b.textContent=u.name;
+    b.textContent= (isAdm ? '👑 ' : '') + u.name;
     strip.appendChild(b);
   });
 
   const myRole=players[currentUser.uid]?.role;
   const roleStatus=el('game-role-status');
   if(myRole==='hider'){
+    const locDet = room.locationDetection?.enabled;
+    const locText = locDet ? ` (ლოკაცია იგზავნება ყოველ ${room.locationDetection.interval || 5} წუთში)` : '';
     roleStatus.innerHTML = isHiding
       ? `<div class="status-card hider"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 12.5A8 8 0 1 1 11.5 4a6.5 6.5 0 0 0 8.5 8.5Z"/></svg></div><b>დამალვის დროა</b><span>იპოვე კარგი ადგილი, სანამ ძებნა დაიწყება</span></div>`
-      : `<div class="status-card hider"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 12.5A8 8 0 1 1 11.5 4a6.5 6.5 0 0 0 8.5 8.5Z"/></svg></div><b>იმალები</b><span>დარჩი ფარულად, სანამ დრო ამოიწურება</span></div>`;
+      : `<div class="status-card hider"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M20 12.5A8 8 0 1 1 11.5 4a6.5 6.5 0 0 0 8.5 8.5Z"/></svg></div><b>იმალები</b><span>დარჩი ფარულად, სანამ დრო ამოიწურება${locText}</span></div>`;
   } else if(myRole==='seeker' && isHiding){
     roleStatus.innerHTML = `<div class="status-card seeker"><div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg></div><b>დამმალველები იმალებიან</b><span>დაელოდე — ძებნა ავტომატურად დაიწყება</span></div>`;
   } else {
@@ -1587,7 +1676,7 @@ async function renderGameScreen(room,roomId){
   el('game-cheat-panel').classList.toggle('hidden', !(currentUserData?.isAppAdmin && currentUserData?.cheatMode));
   if(currentUserData?.isAppAdmin && currentUserData?.cheatMode) ensureCheatMap();
 
-  // pending banner + found modal (only relevant once seeking has started)
+  // pending banner + found modal
   const fr=room.foundRequest;
   const banner=el('game-pending-banner');
   if(!isHiding && fr && fr.status==='pending'){
@@ -1605,7 +1694,7 @@ async function renderGameScreen(room,roomId){
     el('found-modal-overlay').classList.add('hidden');
   }
 
-  // found list (seeker view, seeking phase only)
+  // found list
   if(showSeekerPanel){
     const list=el('found-list'); list.innerHTML='';
     const hiderIds=uids.filter(u=>players[u].role==='hider');
@@ -1637,10 +1726,6 @@ async function renderGameScreen(room,roomId){
     }
   }
 }
-
-/* ======================================================================
-   INIT — nothing else needed; auth listener drives the app
-====================================================================== */
 </script>
 </body>
 </html>
