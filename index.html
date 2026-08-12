@@ -313,30 +313,6 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 
 .players-strip{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;}
 
-/* Hider Ping Banner */
-.hider-ping-banner {
-  position: fixed;
-  top: 60px;
-  left: 50%;
-  transform: translateX(-50%) translateY(-20px);
-  background: var(--hide);
-  color: #2b0006;
-  padding: 8px 20px;
-  border-radius: 20px;
-  font-weight: 800;
-  font-size: 14px;
-  z-index: 500;
-  box-shadow: 0 4px 16px var(--hide-glow);
-  opacity: 0;
-  pointer-events: none;
-  transition: all 0.3s ease;
-  white-space: nowrap;
-}
-.hider-ping-banner.show {
-  opacity: 1;
-  transform: translateX(-50%) translateY(0);
-}
-
 /* utility */
 .mt-0{margin-top:0 !important;}
 .center{text-align:center;}
@@ -348,8 +324,6 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
 <div id="loading-screen"><div class="spinner"></div><p>იტვირთება…</p></div>
 
 <div id="app">
-  <div id="hider-ping-banner" class="hider-ping-banner"></div>
-  
   <div id="screens">
 
     <!-- ============ AUTH ============ -->
@@ -495,6 +469,10 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
           <circle class="ring-fg" id="ring-fg" cx="60" cy="60" r="52"></circle>
         </svg>
         <div class="timer-digits"><div class="num" id="timer-display">00:00</div><div class="lbl" id="timer-phase-label">დარჩენილი</div></div>
+      </div>
+
+      <div class="center" style="margin-bottom:12px;">
+        <span class="badge live hidden" id="next-ping-indicator"></span>
       </div>
 
       <div id="game-pending-banner" class="pending-banner hidden">
@@ -666,7 +644,9 @@ let myInvitesCount = 0;
 const listeners = {};
 let watchId = null;
 let lastLocWrite = 0;
-let hiderPingTimerInterval = null;
+let pingTimers = [];
+let scheduledPingTimes = [];
+let last20sWarnedIdx = null;
 let countdownTimer = null;
 let followingLatestPing = true;
 let mapInstance = null, mapMarkers = {};
@@ -691,6 +671,7 @@ function fmtErr(e){
   if(m.includes('email-already-in-use')) return 'ეს ნომერი უკვე რეგისტრირებულია';
   if(m.includes('weak-password')) return 'პაროლი უნდა იყოს მინიმუმ 6 სიმბოლო';
   if(m.includes('network')) return 'ინტერნეტთან კავშირის პრობლემაა';
+  if(m.includes('permission_denied') || m.includes('permission-denied')) return 'წვდომა აკრძალულია — შეამოწმე Firebase Rules';
   return e?.message || 'დაფიქსირდა შეცდომა';
 }
 function normalizePhone(raw){ return String(raw||'').replace(/[^\d]/g,''); }
@@ -745,6 +726,7 @@ function goTo(tab){
   if(tab==='game'){
     if(activeRoomId && activeRoomData){
       showScreen(isActivePhase(activeRoomData.gameState) ? 'game':'roomdetail');
+      if(currentScreen==='game') renderGameScreen(activeRoomData, activeRoomId);
     } else {
       toast('ჯერ არცერთ რუმში არ ხარ 🙂');
     }
@@ -814,7 +796,7 @@ auth.onAuthStateChanged(async user=>{
     resumeActiveGameIfAny();
   } else {
     currentUser=null; currentUserData=null; activeRoomId=null; activeRoomData=null;
-    offAll(); stopGeoWatch(); stopHiderPingLogic(); stopCountdown();
+    offAll(); stopGeoWatch(); clearPingTimers(); stopCountdown();
     el('bottom-nav').classList.add('hidden');
     showScreen('auth');
   }
@@ -1306,26 +1288,15 @@ el('form-name').addEventListener('submit', async e=>{
     toast('სახელი შეიცვალა');
   }catch(e){ toast(fmtErr(e)); }
 });
-
 el('in-cheat-mode').addEventListener('change', function(){
-  db.ref('users/'+currentUser.uid+'/cheatMode').set(this.checked);
-  currentUserData.cheatMode=this.checked;
-  toast(this.checked ? 'Cheat Mode ჩართულია' : 'Cheat Mode გამორთულია');
-  
-  // Update game screen instantly if active
+  const on=this.checked;
+  db.ref('users/'+currentUser.uid+'/cheatMode').set(on);
+  currentUserData.cheatMode=on;
+  toast(on ? 'Cheat Mode ჩართულია' : 'Cheat Mode გამორთულია');
+  if(!on) offName('live');
   if(activeRoomId && activeRoomData && isActivePhase(activeRoomData.gameState)){
-      const myRole = activeRoomData.players?.[currentUser.uid]?.role;
-      if(myRole === 'seeker') {
-          if(this.checked && !listeners['live']) listenLiveLocations(activeRoomId);
-          else if(!this.checked && listeners['live']) {
-              offName('live');
-              if(mapCheatInstance) {
-                  Object.values(mapCheatMarkers).forEach(m => mapCheatInstance.removeLayer(m));
-                  mapCheatMarkers = {};
-              }
-          }
-      }
-      if(currentScreen === 'game') renderGameScreen(activeRoomData, activeRoomId);
+    handlePlaying(activeRoomData, activeRoomId);
+    if(currentScreen==='game') renderGameScreen(activeRoomData, activeRoomId);
   }
 });
 
@@ -1333,18 +1304,11 @@ el('in-cheat-mode').addEventListener('change', function(){
    GAME — TIMERS / CLEANUP
 ====================================================================== */
 function stopGeoWatch(){ if(watchId!==null){ navigator.geolocation.clearWatch(watchId); watchId=null; } }
-
-function stopHiderPingLogic(){
-  if(hiderPingTimerInterval) { clearInterval(hiderPingTimerInterval); hiderPingTimerInterval = null; }
-  const banner = el('hider-ping-banner');
-  if(banner) banner.classList.remove('show');
-}
-
+function clearPingTimers(){ pingTimers.forEach(t=>clearTimeout(t)); pingTimers=[]; scheduledPingTimes=[]; last20sWarnedIdx=null; }
 function stopCountdown(){ if(countdownTimer){ clearInterval(countdownTimer); countdownTimer=null; } }
-
 function detachGame(){
   offName('pings'); offName('live'); offName('adminCheat'); offName('globalGame');
-  stopGeoWatch(); stopHiderPingLogic(); stopCountdown();
+  stopGeoWatch(); clearPingTimers(); stopCountdown();
   if(mapInstance){ mapInstance.remove(); mapInstance=null; mapMarkers={}; }
   if(mapCheatInstance){ mapCheatInstance.remove(); mapCheatInstance=null; mapCheatMarkers={}; }
   activeRoomId=null; activeRoomData=null;
@@ -1369,7 +1333,7 @@ function attachGlobalGameListener(roomId){
     if(isActivePhase(room.gameState)){
       handlePlaying(room,roomId);
     } else if(room.gameState==='ended'){
-      stopCountdown(); stopHiderPingLogic(); stopGeoWatch();
+      stopCountdown(); clearPingTimers(); stopGeoWatch();
       offName('pings'); offName('live'); offName('adminCheat');
       showGameEndedOverlay(room,roomId);
     }
@@ -1385,23 +1349,11 @@ function handlePlaying(room,roomId){
 
   if(myRole==='seeker'){
     if(!listeners['pings']) listenPings(roomId);
-    if(currentUserData?.isAppAdmin && currentUserData?.cheatMode) {
-        if(!listeners['live']) listenLiveLocations(roomId);
-    } else {
-        if(listeners['live']) {
-            offName('live');
-            if(mapCheatInstance) {
-                Object.values(mapCheatMarkers).forEach(m => mapCheatInstance.removeLayer(m));
-                mapCheatMarkers = {};
-            }
-        }
-    }
+    if(currentUserData?.isAppAdmin && currentUserData?.cheatMode && !listeners['live']) listenLiveLocations(roomId);
   }
   if(myRole==='hider'){
     if(!listeners['adminCheat']) watchAdminCheatMode(room,roomId);
-    if(!hiderPingTimerInterval && room.locationDetection?.enabled && room.startTime) {
-        startHiderPingLogic(room, roomId);
-    }
+    if(pingTimers.length===0 && room.locationDetection?.enabled && room.startTime) schedulePings(room,roomId);
   }
 }
 
@@ -1425,6 +1377,7 @@ function startCountdown(){
       const end=seekStartOf(room)+(room.totalTime||600)*1000;
       const remain=end-Date.now();
       renderTimer(remain, room.totalTime||600, 'playing');
+      updatePingCountdown();
       if(remain<=0){
         stopCountdown();
         db.ref('rooms/'+activeRoomId+'/gameState').transaction(cur=>cur==='playing'?'ended':cur).then(res=>{
@@ -1449,80 +1402,63 @@ function renderTimer(remainMs,totalSec,phase){
   if(lbl) lbl.textContent = phase==='hiding' ? 'დამალვის დრო' : 'საძებნო დრო';
 }
 
-/* ---- Ping scheduling & Notifications (Hider logic) ---- */
-function startHiderPingLogic(room, roomId) {
-  stopHiderPingLogic();
+/* ---- Ping scheduling & pre-send warnings (hiders) ---- */
+function schedulePings(room,roomId){
+  clearPingTimers();
   if(!room.locationDetection?.enabled || !room.startTime) return;
-  const intervalMs = (room.locationDetection.interval || 5) * 60000;
-  const seekStart = seekStartOf(room);
-  const totalMs = (room.totalTime || 600) * 1000;
-  
-  let lastSentPingIdx = Math.max(0, Math.floor((Date.now() - seekStart) / intervalMs));
-
-  hiderPingTimerInterval = setInterval(() => {
-    const now = Date.now();
-    let nextT = null;
-    let nextIdx = null;
-
-    for(let t = seekStart + intervalMs, idx = 1; t <= seekStart + totalMs; t += intervalMs, idx++) {
-      if (t > now) {
-        nextT = t;
-        nextIdx = idx;
-        break;
-      } else if (idx > lastSentPingIdx && now - t < 15000) {
-        // Missed ping grace period
-        lastSentPingIdx = idx;
-        captureAndSendPing(roomId, idx);
-      }
+  const intervalMs=(room.locationDetection.interval||5)*60000;
+  const seekStart=seekStartOf(room);
+  const totalMs=(room.totalTime||600)*1000;
+  const now=Date.now();
+  for(let t=seekStart+intervalMs, idx=1; t<=seekStart+totalMs; t+=intervalMs, idx++){
+    scheduledPingTimes.push({idx, time:t});
+    const delay=t-now;
+    if(delay>200){
+      pingTimers.push(setTimeout(()=>captureAndSendPing(roomId,idx), delay));
     }
-
-    const banner = el('hider-ping-banner');
-    if (!nextT || !banner) {
-      if(banner) banner.classList.remove('show');
-      return;
-    }
-
-    const remainSec = Math.ceil((nextT - now) / 1000);
-    
-    if (remainSec === 20) {
-      banner.textContent = 'ლოკაცია 20 წამში გაიგზავნება';
-      banner.classList.add('show');
-    } else if (remainSec < 20 && remainSec > 10) {
-      banner.classList.remove('show');
-    } else if (remainSec <= 10 && remainSec > 0) {
-      banner.textContent = `ლოკაცია ${remainSec} წამში გაიგზავნება`;
-      banner.classList.add('show');
-    } else if (remainSec <= 0 || remainSec > 20) {
-      banner.classList.remove('show');
-    }
-
-    // Trigger exact send
-    if (now >= nextT && nextIdx && nextIdx > lastSentPingIdx) {
-      lastSentPingIdx = nextIdx;
-      captureAndSendPing(roomId, nextIdx);
-    }
-  }, 500);
+  }
 }
+function updatePingCountdown(){
+  const room=activeRoomData;
+  const myRole=room?.players?.[currentUser.uid]?.role;
+  const relevant = room && room.gameState==='playing' && myRole==='hider' && room.locationDetection?.enabled && scheduledPingTimes.length>0;
+  const indicator = currentScreen==='game' ? el('next-ping-indicator') : null;
 
-function captureAndSendPing(roomId, idx){
-  if(!navigator.geolocation) return;
-  navigator.geolocation.getCurrentPosition(pos=>{
-    db.ref(`rooms/${roomId}/locationPings/${idx}`).update({
-      time:TS,
-      [`positions/${currentUser.uid}`]:{ lat:pos.coords.latitude, lng:pos.coords.longitude, name:currentUserData?.name||'' }
-    });
-    toast('📍 შენი ლოკაცია გაიგზავნა!');
-  }, (err)=>{
-    console.error("Geo err:", err);
-    // Fallback if high accuracy fails
-    navigator.geolocation.getCurrentPosition(pos2=>{
-       db.ref(`rooms/${roomId}/locationPings/${idx}`).update({
-        time:TS,
-        [`positions/${currentUser.uid}`]:{ lat:pos2.coords.latitude, lng:pos2.coords.longitude, name:currentUserData?.name||'' }
-      });
-      toast('📍 შენი ლოკაცია გაიგზავნა!');
-    }, ()=>{}, {enableHighAccuracy:false, timeout:10000});
-  }, {enableHighAccuracy:true, timeout:10000, maximumAge:0});
+  if(!relevant){ if(indicator) indicator.classList.add('hidden'); return; }
+
+  const now=Date.now();
+  const next=scheduledPingTimes.find(p=>p.time>now);
+  if(!next){ if(indicator) indicator.classList.add('hidden'); return; }
+  const remainSec=Math.round((next.time-now)/1000);
+
+  if(remainSec<=20 && remainSec>10 && last20sWarnedIdx!==next.idx){
+    last20sWarnedIdx=next.idx;
+    toast('📍 20 წამში იგზავნება შენი ლოკაცია');
+  }
+
+  if(indicator){
+    if(remainSec<=10 && remainSec>0){
+      indicator.classList.remove('hidden');
+      indicator.textContent = `📍 იგზავნება: ${remainSec}`;
+    } else {
+      indicator.classList.add('hidden');
+    }
+  }
+}
+function captureAndSendPing(roomId,idx){
+  if(!navigator.geolocation){ toast('⚠️ ეს მოწყობილობა ლოკაციას ვერ იძლევა'); return; }
+  const write=(pos)=> db.ref(`rooms/${roomId}/locationPings/${idx}`).update({
+    time:TS,
+    [`positions/${currentUser.uid}`]:{ lat:pos.coords.latitude, lng:pos.coords.longitude, accuracy:pos.coords.accuracy||null, name:currentUserData?.name||'' }
+  });
+  const onOk=(pos)=> write(pos).then(()=>toast('📍 შენი ლოკაცია გაიგზავნა')).catch(()=>toast('⚠️ ლოკაციის გაგზავნა ვერ მოხერხდა (Rules?)'));
+  navigator.geolocation.getCurrentPosition(
+    onOk,
+    ()=>{
+      navigator.geolocation.getCurrentPosition(onOk, ()=>toast('⚠️ ლოკაცია ვერ მოიძებნა — შეამოწმე GPS'), {enableHighAccuracy:false, timeout:10000, maximumAge:15000});
+    },
+    {enableHighAccuracy:true, timeout:12000, maximumAge:0}
+  );
 }
 
 function listenPings(roomId){
@@ -1582,17 +1518,20 @@ function watchAdminCheatMode(room,roomId){
 }
 
 function startHiderLiveFeed(roomId){
-  if(!navigator.geolocation) return;
-  if(watchId !== null) navigator.geolocation.clearWatch(watchId);
+  if(!navigator.geolocation || watchId!==null) return;
   lastLocWrite=0;
+  const write=(pos)=> db.ref(`rooms/${roomId}/liveLocations/${currentUser.uid}`).set({
+    lat:pos.coords.latitude, lng:pos.coords.longitude, name:currentUserData?.name||'', updatedAt:TS
+  });
   watchId=navigator.geolocation.watchPosition(pos=>{
     const now=Date.now();
-    if(now-lastLocWrite<3000) return; // 3 წამიანი თროთლი
+    if(now-lastLocWrite<3000) return;
     lastLocWrite=now;
-    db.ref(`rooms/${roomId}/liveLocations/${currentUser.uid}`).set({
-      lat:pos.coords.latitude, lng:pos.coords.longitude, name:currentUserData?.name||'', updatedAt:TS
-    });
-  }, (err)=>console.error(err), {enableHighAccuracy:true, maximumAge:0, timeout:10000});
+    write(pos).catch(()=>{});
+  }, (err)=>{
+    console.error(err);
+    navigator.geolocation.getCurrentPosition(pos=>{ lastLocWrite=Date.now(); write(pos).catch(()=>{}); }, ()=>{}, {enableHighAccuracy:false, timeout:8000, maximumAge:10000});
+  }, {enableHighAccuracy:true, maximumAge:3000, timeout:10000});
 }
 
 function listenLiveLocations(roomId){
@@ -1781,6 +1720,8 @@ async function renderGameScreen(room,roomId){
   } else {
     roleStatus.innerHTML='';
   }
+
+  if(!(myRole==='hider' && !isHiding)) el('next-ping-indicator').classList.add('hidden');
 
   const showSeekerPanel = myRole==='seeker' && !isHiding;
   el('game-seeker-panel').classList.toggle('hidden', !showSeekerPanel);
