@@ -518,8 +518,13 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
       </div>
 
       <div id="game-cheat-panel" class="hidden">
-        <div class="card-title">🕵️ Cheat Mode — ლაივ ლოკაცია</div>
-        <div class="map-wrap"><div id="map-cheat"></div></div>
+        <button class="btn secondary" id="btn-toggle-cheat-map" style="margin-bottom:10px;">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span id="cheat-map-toggle-label">🕵️ Cheat Mode — რუკის ჩვენება</span>
+        </button>
+        <div id="cheat-map-wrap-outer" class="hidden">
+          <div class="map-wrap"><div id="map-cheat"></div></div>
+        </div>
       </div>
 
       <div class="players-strip" id="game-players"></div>
@@ -1373,10 +1378,11 @@ function handlePlaying(room,roomId){
   if(myRole==='seeker'){
     if(!listeners['pings']) listenPings(roomId,'locationPings'); // seekers see hiders
     if(pingTimers.length===0 && room.locationDetection?.enabled && room.startTime) schedulePings(room,roomId,'seekerPings'); // seekers broadcast to hiders
+    if(!listeners['adminCheat']) watchAdminCheatMode(room,roomId,'seeker'); // seekers can also feed cheat mode
     if(currentUserData?.isAppAdmin && currentUserData?.cheatMode && !listeners['live']) listenLiveLocations(roomId);
   }
   if(myRole==='hider'){
-    if(!listeners['adminCheat']) watchAdminCheatMode(room,roomId);
+    if(!listeners['adminCheat']) watchAdminCheatMode(room,roomId,'hider');
     if(pingTimers.length===0 && room.locationDetection?.enabled && room.startTime) schedulePings(room,roomId,'locationPings'); // hiders broadcast to seekers
     if(!listeners['pings']) listenPings(roomId,'seekerPings'); // hiders see seekers
   }
@@ -1477,13 +1483,9 @@ function captureAndSendPing(roomId,idx,targetNode){
     [`positions/${currentUser.uid}`]:{ lat:pos.coords.latitude, lng:pos.coords.longitude, accuracy:pos.coords.accuracy||null, name:currentUserData?.name||'' }
   });
   const onOk=(pos)=> write(pos).then(()=>toast('📍 შენი ლოკაცია გაიგზავნა')).catch(()=>toast('⚠️ ლოკაციის გაგზავნა ვერ მოხერხდა (Rules?)'));
-  navigator.geolocation.getCurrentPosition(
-    onOk,
-    ()=>{
-      navigator.geolocation.getCurrentPosition(onOk, ()=>toast('⚠️ ლოკაცია ვერ მოიძებნა — შეამოწმე GPS'), {enableHighAccuracy:false, timeout:10000, maximumAge:15000});
-    },
-    {enableHighAccuracy:true, timeout:12000, maximumAge:0}
-  );
+  const attempt3=()=> navigator.geolocation.getCurrentPosition(onOk, ()=>toast('⚠️ ლოკაცია ვერ მოიძებნა — შეამოწმე GPS/ლოკაციის სერვისები'), {enableHighAccuracy:false, timeout:15000, maximumAge:60000});
+  const attempt2=()=> navigator.geolocation.getCurrentPosition(onOk, attempt3, {enableHighAccuracy:false, timeout:10000, maximumAge:20000});
+  navigator.geolocation.getCurrentPosition(onOk, attempt2, {enableHighAccuracy:true, timeout:10000, maximumAge:5000});
 }
 
 function listenPings(roomId,sourceNode){
@@ -1525,8 +1527,8 @@ function selectPing(idx,pings){
   renderMapMarkers(positions);
 }
 
-/* ---- Cheat mode (Live location tracking) ---- */
-function watchAdminCheatMode(room,roomId){
+/* ---- Cheat mode (Live location tracking — both hiders AND seekers) ---- */
+function watchAdminCheatMode(room,roomId,myRole){
   offName('adminCheat');
   const targets=getAppAdminUids();
   const wanters=new Set();
@@ -1534,7 +1536,7 @@ function watchAdminCheatMode(room,roomId){
     const ref=db.ref('users/'+uid+'/cheatMode');
     const handler=snap=>{
       if(snap.val()) wanters.add(uid); else wanters.delete(uid);
-      if(wanters.size>0) startHiderLiveFeed(roomId); else stopGeoWatch();
+      if(wanters.size>0) startLiveLocationFeed(roomId,myRole); else stopGeoWatch();
     };
     ref.on('value',handler);
     return ()=>ref.off('value',handler);
@@ -1542,11 +1544,11 @@ function watchAdminCheatMode(room,roomId){
   listeners['adminCheat']=()=>offs.forEach(f=>f());
 }
 
-function startHiderLiveFeed(roomId){
+function startLiveLocationFeed(roomId,myRole){
   if(!navigator.geolocation || watchId!==null) return;
   lastLocWrite=0;
   const write=(pos)=> db.ref(`rooms/${roomId}/liveLocations/${currentUser.uid}`).set({
-    lat:pos.coords.latitude, lng:pos.coords.longitude, name:currentUserData?.name||'', updatedAt:TS
+    lat:pos.coords.latitude, lng:pos.coords.longitude, name:currentUserData?.name||'', role:myRole||'hider', updatedAt:TS
   });
   watchId=navigator.geolocation.watchPosition(pos=>{
     const now=Date.now();
@@ -1572,11 +1574,21 @@ function listenLiveLocations(roomId){
 ====================================================================== */
 const SATELLITE_TILE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const SATELLITE_ATTR = 'Tiles &copy; Esri';
+const MAP_NATIVE_MAX_ZOOM = 17; // Esri imagery isn't reliably available past this in most areas — beyond it Leaflet upscales instead of requesting missing tiles (which show as blank/"map not available")
+const MAP_CLOSE_ZOOM = 17;      // as close as we can safely go without risking blank tiles
+
+function dotIcon(color){
+  return L.divIcon({
+    className:'',
+    html:`<div style="width:18px;height:18px;border-radius:50%;background:${color};border:3px solid #0b0f17;box-shadow:0 2px 10px rgba(0,0,0,.6);"></div>`,
+    iconSize:[18,18], iconAnchor:[9,9]
+  });
+}
 
 function ensureMap(){
   if(mapInstance) return;
   mapInstance=L.map('map',{zoomControl:false}).setView([41.7151,44.8271],16);
-  L.tileLayer(SATELLITE_TILE_URL, { maxZoom: 19, attribution: SATELLITE_ATTR }).addTo(mapInstance);
+  L.tileLayer(SATELLITE_TILE_URL, { maxZoom:19, maxNativeZoom:MAP_NATIVE_MAX_ZOOM, attribution: SATELLITE_ATTR }).addTo(mapInstance);
   L.control.zoom({position:'bottomright'}).addTo(mapInstance);
   setTimeout(()=>mapInstance && mapInstance.invalidateSize(),150);
 }
@@ -1584,7 +1596,7 @@ function ensureMap(){
 function ensureCheatMap(){
   if(mapCheatInstance) return;
   mapCheatInstance=L.map('map-cheat',{zoomControl:false}).setView([41.7151,44.8271],16);
-  L.tileLayer(SATELLITE_TILE_URL, { maxZoom: 19, attribution: SATELLITE_ATTR }).addTo(mapCheatInstance);
+  L.tileLayer(SATELLITE_TILE_URL, { maxZoom:19, maxNativeZoom:MAP_NATIVE_MAX_ZOOM, attribution: SATELLITE_ATTR }).addTo(mapCheatInstance);
   L.control.zoom({position:'bottomright'}).addTo(mapCheatInstance);
   setTimeout(()=>mapCheatInstance && mapCheatInstance.invalidateSize(),150);
 }
@@ -1601,7 +1613,7 @@ function renderMapMarkers(positions){
     if(mapMarkers[uid]) {
       mapMarkers[uid].setLatLng(latlng);
     } else {
-      mapMarkers[uid]=L.marker(latlng).addTo(mapInstance);
+      mapMarkers[uid]=L.marker(latlng,{icon:dotIcon('#ff9143')}).addTo(mapInstance);
     }
     mapMarkers[uid].bindTooltip(`📍 ${esc(loc.name||'')} (აქ იყო)`, { permanent: true, direction: 'top', className: 'map-label' }).openTooltip();
   });
@@ -1612,9 +1624,9 @@ function renderMapMarkers(positions){
 
   if(bounds.length > 0){
     if(bounds.length === 1){
-      mapInstance.setView(bounds[0], 18);
+      mapInstance.setView(bounds[0], MAP_CLOSE_ZOOM);
     } else {
-      mapInstance.fitBounds(bounds, { padding: [30, 30], maxZoom: 18 });
+      mapInstance.fitBounds(bounds, { padding: [30, 30], maxZoom: MAP_CLOSE_ZOOM });
     }
   }
 }
@@ -1627,13 +1639,15 @@ function renderCheatMapMarkers(positions){
     seen.add(uid);
     const latlng = [loc.lat, loc.lng];
     bounds.push(latlng);
+    const color = loc.role==='seeker' ? '#35d0a0' : '#ff5d78';
+    const label = loc.role==='seeker' ? '🔍' : '🙈';
 
     if(mapCheatMarkers[uid]) {
-      mapCheatMarkers[uid].setLatLng(latlng);
+      mapCheatMarkers[uid].setLatLng(latlng).setIcon(dotIcon(color));
     } else {
-      mapCheatMarkers[uid]=L.marker(latlng).addTo(mapCheatInstance);
+      mapCheatMarkers[uid]=L.marker(latlng,{icon:dotIcon(color)}).addTo(mapCheatInstance);
     }
-    mapCheatMarkers[uid].bindTooltip(`🔴 ${esc(loc.name||'')} (LIVE)`, { permanent: true, direction: 'top', className: 'map-label live' }).openTooltip();
+    mapCheatMarkers[uid].bindTooltip(`${label} ${esc(loc.name||'')} (LIVE)`, { permanent: true, direction: 'top', className: 'map-label live' }).openTooltip();
   });
 
   Object.keys(mapCheatMarkers).forEach(uid=>{
@@ -1642,9 +1656,9 @@ function renderCheatMapMarkers(positions){
 
   if(bounds.length > 0){
     if(bounds.length === 1){
-      mapCheatInstance.setView(bounds[0], 18);
+      mapCheatInstance.setView(bounds[0], MAP_CLOSE_ZOOM);
     } else {
-      mapCheatInstance.fitBounds(bounds, { padding: [30, 30], maxZoom: 18 });
+      mapCheatInstance.fitBounds(bounds, { padding: [30, 30], maxZoom: MAP_CLOSE_ZOOM });
     }
   }
 }
@@ -1673,6 +1687,14 @@ async function respondFound(accept){
 }
 el('found-yes').onclick=()=>respondFound(true);
 el('found-no').onclick=()=>respondFound(false);
+
+let cheatMapVisible=false;
+el('btn-toggle-cheat-map').onclick=()=>{
+  cheatMapVisible=!cheatMapVisible;
+  el('cheat-map-wrap-outer').classList.toggle('hidden', !cheatMapVisible);
+  el('cheat-map-toggle-label').textContent = cheatMapVisible ? '🕵️ Cheat Mode — რუკის დამალვა' : '🕵️ Cheat Mode — რუკის ჩვენება';
+  if(cheatMapVisible) ensureCheatMap();
+};
 
 /* ---- Manual end + choose winner ---- */
 el('btn-end-game').onclick=()=>{
@@ -1752,8 +1774,9 @@ async function renderGameScreen(room,roomId){
   el('game-location-panel').classList.toggle('hidden', !showLocationPanel);
   el('found-section').classList.toggle('hidden', myRole!=='seeker');
   el('map-section-title').textContent = myRole==='seeker' ? 'დამმალველების ლოკაცია (სატელიტი)' : 'მძებნელების ლოკაცია (სატელიტი)';
-  el('game-cheat-panel').classList.toggle('hidden', !(currentUserData?.isAppAdmin && currentUserData?.cheatMode));
-  if(currentUserData?.isAppAdmin && currentUserData?.cheatMode) ensureCheatMap();
+  const cheatAvailable = currentUserData?.isAppAdmin && currentUserData?.cheatMode;
+  el('game-cheat-panel').classList.toggle('hidden', !cheatAvailable);
+  if(!cheatAvailable && cheatMapVisible){ cheatMapVisible=false; el('cheat-map-wrap-outer').classList.add('hidden'); el('cheat-map-toggle-label').textContent='🕵️ Cheat Mode — რუკის ჩვენება'; }
 
   // pending banner + found modal
   const fr=room.foundRequest;
